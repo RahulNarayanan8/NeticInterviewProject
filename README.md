@@ -43,8 +43,9 @@ Netic_Project/
 python -m venv env
 source env/bin/activate
 
-# 2. Install dependencies
+# 2. Install dependencies (there is a requirements.txt for your convenience)
 pip install gradio anthropic python-dotenv pytest
+
 
 # 3. Set your API key — either export it or put it in a .env file
 export ANTHROPIC_API_KEY=sk-ant-...
