@@ -22,7 +22,7 @@ def _build_system_prompt(
 ) -> str:
     lines = [
         "You are a helpful FAQ assistant for a home services company offering "
-        "plumbing, electrical, and HVAC services. Be concise and friendly.",
+        "plumbing, electrical, and HVAC services. Be concise and friendly. Dont ask things like 'Would you like to schedule an appointment'.",
     ]
 
     if customer:
