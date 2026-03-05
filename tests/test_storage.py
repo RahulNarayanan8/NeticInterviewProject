@@ -167,3 +167,48 @@ class TestSaveAppointment:
         saved = json.loads(appt_path.read_text())
         assert len(saved) == 20
         assert sorted(r["index"] for r in saved) == list(range(20))
+
+
+class TestCancelAppointment:
+    def _appt(self, **kwargs):
+        base = {"addr": "123 St", "start_time": "2030-06-15T14:00:00",
+                "end_time": "2030-06-15T16:00:00", "appointment_type": "plumbing",
+                "tech_id": 1, "customer_id": 99}
+        base.update(kwargs)
+        return base
+
+    def test_removes_matching_appointment(self, tmp_path, monkeypatch):
+        appt_path = tmp_path / "appointments.json"
+        appt = self._appt()
+        _write_json(appt_path, [appt])
+        monkeypatch.setattr(storage, "APPOINTMENTS_PATH", appt_path)
+        storage.cancel_appointment(appt)
+        assert json.loads(appt_path.read_text()) == []
+
+    def test_leaves_other_appointments_intact(self, tmp_path, monkeypatch):
+        appt_path = tmp_path / "appointments.json"
+        a1 = self._appt(start_time="2030-06-15T09:00:00", customer_id=1)
+        a2 = self._appt(start_time="2030-06-15T14:00:00", customer_id=2)
+        _write_json(appt_path, [a1, a2])
+        monkeypatch.setattr(storage, "APPOINTMENTS_PATH", appt_path)
+        storage.cancel_appointment(a1)
+        saved = json.loads(appt_path.read_text())
+        assert saved == [a2]
+
+    def test_no_match_leaves_all_intact(self, tmp_path, monkeypatch):
+        appt_path = tmp_path / "appointments.json"
+        appt = self._appt()
+        _write_json(appt_path, [appt])
+        monkeypatch.setattr(storage, "APPOINTMENTS_PATH", appt_path)
+        storage.cancel_appointment(self._appt(customer_id=999))
+        assert json.loads(appt_path.read_text()) == [appt]
+
+    def test_removes_only_first_duplicate(self, tmp_path, monkeypatch):
+        # Exact duplicates: both match, both should be removed (filter removes all)
+        appt_path = tmp_path / "appointments.json"
+        appt = self._appt()
+        _write_json(appt_path, [appt, appt])
+        monkeypatch.setattr(storage, "APPOINTMENTS_PATH", appt_path)
+        storage.cancel_appointment(appt)
+        # All exact matches are removed (list comprehension behaviour)
+        assert json.loads(appt_path.read_text()) == []

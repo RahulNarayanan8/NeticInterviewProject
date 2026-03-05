@@ -155,6 +155,9 @@ def parse_datetime_input(text: str) -> tuple:
 # State machine
 # ---------------------------------------------------------------------------
 
+MENU_HINT = "Type **book**, **faq**, **review**, or **cancel**."
+
+
 def initial_state() -> dict:
     return {
         "stage": "IDENTIFY",
@@ -166,6 +169,7 @@ def initial_state() -> dict:
             "start_time": None,
             "end_time": None,
         },
+        "cancel_options": [],   # upcoming appointments shown during CANCEL_SELECT
     }
 
 
@@ -199,8 +203,7 @@ def process_message(user_input: str, state: dict, history: list):
             state["stage"] = "MAIN_MENU"
             name = state["customer"]["name"]
             reply = (
-                f"Welcome, {name}! What can I help you with?\n"
-                "Type **book** to schedule a service, **faq** to ask a question, or **review** to leave a review."
+                f"Welcome, {name}! What can I help you with?\n" + MENU_HINT
             )
         elif user_input.lower() in ("no", "n"):
             state["stage"] = "IDENTIFY"
@@ -222,14 +225,39 @@ def process_message(user_input: str, state: dict, history: list):
         elif cmd == "review":
             state["stage"] = "REVIEW"
             reply = "Please type your review and press Send."
+        elif cmd == "cancel":
+            customer = state["customer"]
+            all_appts = storage.load_appointments()
+            future_appts = [
+                a for a in all_appts
+                if a["customer_id"] == customer["id"]
+                and datetime.fromisoformat(a["start_time"]) > datetime.now()
+            ]
+            if not future_appts:
+                reply = "You have no upcoming appointments to cancel. " + MENU_HINT
+            else:
+                state["stage"] = "CANCEL_SELECT"
+                state["cancel_options"] = future_appts
+                tech_by_id = {t["id"]: t["name"] for t in get_data()["Technician_Profiles"]}
+                lines = ["Your upcoming appointments:"]
+                for i, appt in enumerate(future_appts, 1):
+                    start = datetime.fromisoformat(appt["start_time"])
+                    tech_name = tech_by_id.get(appt["tech_id"], f"Technician #{appt['tech_id']}")
+                    lines.append(
+                        f"  **{i}.** {appt['appointment_type'].title()} — "
+                        f"{start.strftime('%Y-%m-%d %H:%M')} — "
+                        f"{appt['addr']} — {tech_name}"
+                    )
+                lines.append("\nEnter the number to cancel, or **back** to return to the menu.")
+                reply = "\n".join(lines)
         else:
-            reply = "Please type **book**, **faq**, or **review**."
+            reply = "Please type **book**, **faq**, **review**, or **cancel**."
 
     # -----------------------------------------------------------------------
     elif stage == "FAQ":
         if user_input.lower() == "done":
             state["stage"] = "MAIN_MENU"
-            reply = "Back to the main menu. Type **book**, **faq**, or **review**."
+            reply = MENU_HINT
         else:
             all_appts = storage.load_appointments()
             customer_appts = [
@@ -256,7 +284,34 @@ def process_message(user_input: str, state: dict, history: list):
             "submitted_at": datetime.now().isoformat(),
         })
         state["stage"] = "MAIN_MENU"
-        reply = "Thank you for your review! Type **book**, **faq**, or **review**."
+        reply = "Thank you for your review! " + MENU_HINT
+
+    # -----------------------------------------------------------------------
+    elif stage == "CANCEL_SELECT":
+        if user_input.lower() == "back":
+            state["stage"] = "MAIN_MENU"
+            state["cancel_options"] = []
+            reply = MENU_HINT
+        else:
+            options = state["cancel_options"]
+            try:
+                idx = int(user_input.strip())
+            except ValueError:
+                reply = f"Please enter a number between 1 and {len(options)}, or **back** to return."
+            else:
+                if 1 <= idx <= len(options):
+                    appt = options[idx - 1]
+                    storage.cancel_appointment(appt)
+                    state["cancel_options"] = []
+                    state["stage"] = "MAIN_MENU"
+                    start = datetime.fromisoformat(appt["start_time"])
+                    reply = (
+                        f"Your **{appt['appointment_type']}** appointment on "
+                        f"{start.strftime('%Y-%m-%d')} at {start.strftime('%H:%M')} "
+                        f"has been cancelled. " + MENU_HINT
+                    )
+                else:
+                    reply = f"Please enter a number between 1 and {len(options)}, or **back** to return."
 
     # -----------------------------------------------------------------------
     elif stage == "BOOKING_SERVICE":
@@ -374,7 +429,7 @@ def process_message(user_input: str, state: dict, history: list):
                 "start_time": None, "end_time": None,
             }
             state["stage"] = "MAIN_MENU"
-            reply += "\n\nType **book**, **faq**, or **review**."
+            reply += "\n\n" + MENU_HINT
 
         elif user_input.lower() in ("no", "n"):
             state["stage"] = "MAIN_MENU"
@@ -382,7 +437,7 @@ def process_message(user_input: str, state: dict, history: list):
                 "service": None, "address": None,
                 "start_time": None, "end_time": None,
             }
-            reply = "Booking cancelled. Type **book** or **faq**."
+            reply = "Booking cancelled. " + MENU_HINT
         else:
             reply = "Please type **yes** or **no**."
 

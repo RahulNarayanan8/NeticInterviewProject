@@ -43,6 +43,16 @@ def save_appointment(appt_dict: dict) -> None:
             json.dump(appointments, f, indent=2)
 
 
+def cancel_appointment(appt_dict: dict) -> None:
+    """Remove an appointment from appointments.json by exact dict match."""
+    with _appt_lock:
+        with open(APPOINTMENTS_PATH) as f:
+            appointments = json.load(f)
+        appointments = [a for a in appointments if a != appt_dict]
+        with open(APPOINTMENTS_PATH, "w") as f:
+            json.dump(appointments, f, indent=2)
+
+
 def save_review(review_dict: dict) -> None:
     """Append a new review dict to reviews.json."""
     with _review_lock:

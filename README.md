@@ -1,15 +1,17 @@
 # Home Services Chatbot
 
-A Gradio-based customer chatbot for a home services company. Customers can book a technician appointment or ask FAQ questions powered by Claude.
+A Gradio-based customer chatbot for a home services company. Customers can book a technician appointment, cancel an existing booking, leave a review, or ask FAQ questions — all powered by Claude.
 
 ---
 
 ## Features
 
 - **Appointment booking** — guided flow: identify customer → choose service → confirm address → describe when → dispatch the best available technician
-- **Early availability check** — if no technician serves the customer's zip with the requested skill, the bot says so immediately at service selection, before the customer fills in any further details
-- **Natural language date parsing** — Claude Haiku interprets free-form date/time input ("next Tuesday at 2pm for 1.5 hours") and converts it to a structured datetime
-- **FAQ assistant** — Claude Sonnet answers any home services question with full context: the customer's name, their address on file, and every technician's skills and zip coverage
+- **Appointment cancellation** — lists all upcoming (future) appointments for the customer, numbered; the customer picks one to remove
+- **Reviews** — customers can type a free-form review which is persisted to `reviews.json`
+- **Early availability check** — if no technician serves the customer's zip with the requested skill, the bot says so immediately at service selection
+- **Natural language date parsing** — Claude Haiku interprets free-form date/time input (*"next Tuesday at 2pm for 1.5 hours"*) and converts it to a structured datetime
+- **FAQ assistant** — Claude Sonnet answers any home services question with full context: the customer's name, address on file, technician coverage, and their existing appointments
 - **Smart scheduling** — technicians are filtered by zip and skill, conflict-checked, then ranked by a load-spreading score
 
 ---
@@ -20,13 +22,14 @@ A Gradio-based customer chatbot for a home services company. Customers can book 
 Netic_Project/
 ├── app.py          # Gradio UI, state machine, booking helpers, LLM date parser
 ├── scheduler.py    # Technician filtering, conflict detection, scoring, dispatch
-├── faq.py          # Claude FAQ handler with customer + technician context
+├── faq.py          # Claude FAQ handler with customer + technician + appointment context
 ├── models.py       # Appointment and Technician dataclasses + JSON helpers
-├── storage.py      # Thread-safe JSON read/write
+├── storage.py      # Thread-safe JSON read/write for all data files
 ├── data/
 │   ├── data.json           # Customer, location, and technician profiles (read-only)
-│   └── appointments.json   # Persisted bookings (created at startup as [])
-└── tests/          # pytest test suite (147 tests)
+│   ├── appointments.json   # Persisted bookings (created at startup as [])
+│   └── reviews.json        # Persisted reviews (created at startup as [])
+└── tests/          # pytest test suite (181 tests)
 ```
 
 ---
@@ -58,21 +61,33 @@ The app opens at **http://localhost:7860**.
 
 ## How to Use
 
-### Booking a technician
+After identifying yourself, you'll land at the main menu. All four options are available from there at any time.
 
-1. Enter your **customer ID** (e.g. `6945`) or **full name**
-2. Confirm your identity
-3. Type `book`
-4. Enter the service: `plumbing`, `electrical`, or `hvac`
-   - If no technician covers your area for that service, the bot tells you immediately
-5. Confirm or override your address on file
-6. Describe when: *"March 10 at 2pm for 2 hours"* or *"2030-03-10 14:00 2"*
-7. Review the summary and confirm — the best available technician is assigned
+### Book a technician
 
-### Asking a question
+1. Type `book`
+2. Enter the service: `plumbing`, `electrical`, or `hvac`
+   - If no technician covers your area for that service, the bot says so immediately
+3. Confirm or override your address on file
+4. Describe when: *"March 10 at 2pm for 2 hours"* or *"2030-03-10 14:00 2"*
+5. Review the summary and confirm — the best available technician is assigned
 
-1. After identifying yourself, type `faq`
-2. Ask anything — the bot knows your address, your zip, and which technicians can help you
+### Cancel an appointment
+
+1. Type `cancel`
+2. The bot lists all your upcoming appointments (future only), numbered
+3. Enter the number of the appointment to cancel — it is removed from `appointments.json`
+4. Type `back` at any point to return to the menu without cancelling
+
+### Leave a review
+
+1. Type `review`
+2. Type anything — the full text is saved to `reviews.json` along with your customer ID, name, and a timestamp
+
+### Ask a question
+
+1. Type `faq`
+2. Ask anything — the bot has full context: your address, technician coverage in your area, and all your booked appointments
 3. Type `done` to return to the main menu
 
 ---
@@ -81,13 +96,11 @@ The app opens at **http://localhost:7860**.
 
 ### State machine (`app.py`)
 
-The chatbot advances through named stages. Each stage reads user input, validates it, and either moves forward or re-prompts.
+The chatbot advances through named stages. Each stage reads user input, validates it, and either moves forward or re-prompts. A constant `MENU_HINT` is used everywhere a list of options is shown, keeping all prompts consistent.
 
 ```
 IDENTIFY → CONFIRM_IDENTITY → MAIN_MENU ─┬─► BOOKING_SERVICE
-                                          │       │
                                           │       │  (early availability check)
-                                          │       │
                                           │   BOOKING_ADDRESS
                                           │       │
                                           │   BOOKING_DATETIME
@@ -96,12 +109,20 @@ IDENTIFY → CONFIRM_IDENTITY → MAIN_MENU ─┬─► BOOKING_SERVICE
                                           │       │
                                           │   (result) ──► MAIN_MENU
                                           │
+                                          ├─► CANCEL_SELECT ──► MAIN_MENU
+                                          │
+                                          ├─► REVIEW ──► MAIN_MENU
+                                          │
                                           └─► FAQ ──► MAIN_MENU
 ```
 
-**Identity lookup** — the `IDENTIFY` stage first tries to parse the input as an integer ID; if that fails it falls back to a case-insensitive full-name match across `Customer_Profiles`.
+**Identity lookup** — `IDENTIFY` first tries to parse input as an integer customer ID; if that fails it falls back to a case-insensitive full-name match across `Customer_Profiles`.
 
-**Early availability check** (`BOOKING_SERVICE`) — immediately after the customer picks a service, the bot checks whether any technician in `data.json` covers the customer's on-file zip *and* has that skill. If not, it returns an error message right away and goes back to `MAIN_MENU`. This check is skipped if the customer has no address on file.
+**Early availability check** (`BOOKING_SERVICE`) — after the customer picks a service, the bot immediately checks whether any technician covers the customer's on-file zip *and* has that skill. If not, it replies with an error and returns to `MAIN_MENU`. Skipped if the customer has no address on file.
+
+**Cancel flow** (`CANCEL_SELECT`) — upcoming appointments (those with `start_time > now`) are filtered to the current customer, displayed as a numbered list with service, date/time, address, and technician name. A valid integer selection removes the appointment via `storage.cancel_appointment`. Non-numeric, out-of-range, and negative inputs re-prompt with the valid range. `back` exits without changes.
+
+**Review flow** (`REVIEW`) — any text the customer sends is saved as-is. No validation is applied; the full input is stored verbatim.
 
 ---
 
@@ -114,90 +135,106 @@ Parsing is split into two steps so the validation logic is independently testabl
 Calls `claude-haiku-4-5-20251001` with today's date in the system prompt:
 
 ```
-System: Today's date is {today}. Extract the appointment start date/time and
-        duration in hours from the user's message. Return ONLY valid JSON:
-        {"start": "YYYY-MM-DDTHH:MM:00", "duration_hours": <float>}.
-        Resolve relative expressions like 'tomorrow' against today's date.
-        If you cannot determine a value, use null for that field.
+Today's date is {today}. Extract the appointment start date/time and duration
+in hours. Return ONLY valid JSON:
+{"start": "YYYY-MM-DDTHH:MM:00", "duration_hours": <float>}.
+Resolve relative expressions like 'tomorrow' against today's date.
+If you cannot determine a value, use null for that field.
 ```
 
 The response is parsed as JSON. Markdown code fences are stripped if present. Missing or null fields raise a `ValueError` with a user-friendly message.
 
 **Step 2 — Business rule validation (`_validate_booking_window` + `parse_datetime_input`)**
 
-After extraction, `parse_datetime_input` applies these rules in order:
-
-| Rule | Error |
+| Rule | Error message |
 |---|---|
-| `duration_hours <= 0` | "Duration must be greater than 0 hours." |
-| `duration_hours > 8` | "Duration cannot exceed 8 hours." |
-| `start < now()` | "Appointment date/time is in the past." |
-| `start.hour < 6` | "Start time must be at or after 06:00." |
-| `end.date > start.date` | "Appointment must not cross midnight." |
+| `duration_hours <= 0` | Duration must be greater than 0 hours. |
+| `duration_hours > 8` | Duration cannot exceed 8 hours. |
+| `start < now()` | Appointment date/time is in the past. |
+| `start.hour < 6` | Start time must be at or after 06:00. |
+| `end.date > start.date` | Appointment must not cross midnight. |
 
-Decimal durations are fully supported (e.g. `1.5` → 90 minutes).
+Decimal durations are fully supported (e.g. `1.5` → 90 minutes, `0.25` → 15 minutes).
 
 ---
 
 ### Scheduling (`scheduler.py`)
 
-**Build** — `build_technicians(data, appointments)` merges `Technician_Profiles` from `data.json` with saved appointment records, attaching each `Appointment` object to its technician.
+**Build** — `build_technicians(data, appointments)` merges `Technician_Profiles` from `data.json` with saved appointment records, attaching each `Appointment` to its technician.
 
 **Filter** — `find_technician` narrows candidates to those who:
 1. Have the requested zip code in their `zones`
 2. Have the requested skill (case-insensitive) in their `business_units`
-3. Have no existing appointment that overlaps the requested window
+3. Have no existing appointment overlapping the requested window
 
-Overlap rule — two windows conflict when:
+Overlap rule:
 ```
 a_start < b_end  AND  a_end > b_start
 ```
-Windows that share an exact boundary (one ends at 10:00, the next starts at 10:00) are **not** conflicts.
+Windows sharing an exact boundary are **not** conflicts.
 
-**Score** — among available candidates, pick the one with the highest load-spreading score:
-
+**Score** — pick the candidate with the highest load-spreading score:
 ```
 score = gap_before + gap_after   (minutes)
 
 gap_before = start − end_of_last_prior_appt_that_day
-             (or start − 06:00 if no prior appointment)
+             (or start − 06:00 if none)
 
 gap_after  = start_of_next_appt_that_day − end
-             (or 23:59 − end if no later appointment)
+             (or 23:59 − end if none)
 ```
-
-A higher score means the new slot fits more naturally into the technician's day, preferring technicians with room on either side rather than those with tight back-to-back schedules.
+A higher score means the slot fits more naturally into the day, avoiding short awkward gaps.
 
 ---
 
 ### FAQ assistant (`faq.py`)
 
-`answer_faq(question, customer, location, data)` builds a context-rich system prompt before calling `claude-sonnet-4-6`:
+`answer_faq(question, customer, location, data, appointments)` builds a context-rich system prompt before calling `claude-sonnet-4-6`. The prompt includes:
 
-- **Customer context** — name and ID of the authenticated customer
-- **Location context** — service address on file
-- **Technician context** — for every technician: name, skills, and zip codes served
+- **Customer** — name and ID
+- **Location** — service address on file
+- **Technicians** — each technician's name, skills, and zip codes served
+- **Appointments** — all appointments previously booked by this customer (filtered by `customer_id` before being passed in); if none, explicitly says so to prevent hallucination
 
-This allows Claude to answer specific questions like *"Is plumbing available at my address?"* or *"Who would come to fix my HVAC?"* by cross-referencing the customer's zip against actual technician coverage.
+This lets Claude answer questions like *"When is my next plumbing visit?"*, *"Is HVAC available at my address?"*, or *"Who is my technician?"* with accurate, specific information.
 
 ---
 
-### Data flow
+### Storage (`storage.py`)
 
-```
-data/data.json  ──►  storage.load_data()
-                          │
-                          ▼
-                  scheduler.build_technicians()  ◄──  appointments.json
-                          │
-                          ▼
-                  scheduler.find_technician()    (filter → conflict-check → score)
-                          │
-                          ▼
-                  scheduler.schedule_appointment()  ──►  appointments.json
-```
+All writes use `threading.Lock` to be safe under concurrent requests. Appointments and reviews have separate locks.
 
-`data.json` is read-only. All bookings are appended to `appointments.json`, which is created as an empty list on first run. Writes use a `threading.Lock` to be safe under concurrent requests.
+| Function | File | Description |
+|---|---|---|
+| `load_data()` | `data.json` | Read-only load of all profiles |
+| `load_appointments()` | `appointments.json` | Read full appointments list |
+| `save_appointment(dict)` | `appointments.json` | Append a new booking |
+| `cancel_appointment(dict)` | `appointments.json` | Remove by exact dict match |
+| `save_review(dict)` | `reviews.json` | Append a new review |
+
+`cancel_appointment` removes all entries that exactly match the provided dict. Since each appointment is uniquely identified by the combination of `customer_id`, `tech_id`, and `start_time`, this is effectively a targeted delete.
+
+**Persisted record shapes:**
+
+```python
+# appointments.json entry
+{
+  "addr": "...",
+  "start_time": "2030-06-15T14:00:00",
+  "end_time":   "2030-06-15T16:00:00",
+  "appointment_type": "plumbing",
+  "tech_id": 4697,
+  "customer_id": 6945
+}
+
+# reviews.json entry
+{
+  "customer_id": 6945,
+  "customer_name": "Heather Russell",
+  "text": "Great service!",
+  "submitted_at": "2030-06-15T14:32:00.123456"
+}
+```
 
 ---
 
@@ -217,12 +254,12 @@ class Appointment:
 class Technician:
     id: int
     name: str
-    skills: List[str]        # business_units lowercased
-    zips: List[str]          # zones
+    skills: List[str]       # business_units, stored lowercase
+    zips: List[str]         # zones
     appointments: List[Appointment]
 ```
 
-`appointment_to_dict` / `dict_to_appointment` handle JSON serialization with ISO-format datetimes.
+`appointment_to_dict` / `dict_to_appointment` handle serialization with ISO-format datetimes.
 
 ---
 
@@ -233,16 +270,20 @@ source env/bin/activate
 python -m pytest tests/ -v
 ```
 
-147 tests across four files:
+181 tests across four files:
 
 | File | What it covers |
 |---|---|
 | `test_models.py` | Dataclass fields, equality, default list isolation, serialization round-trip |
-| `test_storage.py` | `init`, `load_data` schema, `save_appointment` append semantics, 20-thread concurrency |
-| `test_scheduler.py` | `extract_zip`, `build_technicians`, `overlaps` boundaries, `score_technician` gap math, `find_technician` (filter/conflict/score/real-data), `schedule_appointment` |
-| `test_app_helpers.py` | `_validate_booking_window` (direct datetime inputs), `parse_datetime_input` (mocked LLM), customer lookup, all state machine transitions including early availability check |
+| `test_storage.py` | `init`, `load_data` schema, `save_appointment` append + concurrency, `cancel_appointment` (removes target, leaves others, no-match is a no-op) |
+| `test_scheduler.py` | `extract_zip`, `build_technicians`, `overlaps` boundary cases, `score_technician` gap math, `find_technician` (filter/conflict/score/real-data), `schedule_appointment` |
+| `test_app_helpers.py` | `_validate_booking_window`, `parse_datetime_input` (mocked LLM), customer lookup, every state machine stage and transition including early availability check, cancel flow, review flow |
 
-Datetime validation tests call `_validate_booking_window` directly with `datetime` objects — no LLM calls. Tests for `parse_datetime_input` mock `_llm_parse_datetime` to stay fast and deterministic. All hardcoded test dates use 2030 or later to avoid failing the past-date check as time passes.
+**Test design notes:**
+- Datetime validation tests call `_validate_booking_window` with `datetime` objects directly — no LLM calls
+- `parse_datetime_input` tests mock `_llm_parse_datetime` to stay fast and deterministic
+- Cancel and review tests use `tmp_path` + `monkeypatch` to redirect file paths — the real `appointments.json` and `reviews.json` are never touched
+- All hardcoded test dates use 2030 or later to avoid failing the past-date check as time passes
 
 ---
 
@@ -251,4 +292,4 @@ Datetime validation tests call `_validate_booking_window` directly with `datetim
 - **Customer IDs** are shared across `Customer_Profiles` and `Location_Profiles` — a customer's address is looked up by matching `id` fields.
 - **Technician skills** are normalised to lowercase internally regardless of how they appear in `data.json`.
 - **Zip codes** are extracted from addresses by splitting on commas and taking the last token.
-- A customer without a location on file (`Location_Profiles` has no matching `id`) can still book by entering a custom address; the early availability check is skipped for them.
+- A customer without a location on file can still book by entering a custom address; the early availability check is skipped for them. If their custom address is in an uncovered zip, that is caught at confirmation time.

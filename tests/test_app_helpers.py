@@ -326,7 +326,7 @@ class TestStateMachineMainMenu:
     def test_invalid_stays_in_menu(self, menu_state):
         _, history, new_state = process_message("help", menu_state, [])
         assert new_state["stage"] == "MAIN_MENU"
-        assert "review" in history[-1]["content"].lower()
+        assert "cancel" in history[-1]["content"].lower()
 
     def test_case_insensitive_book(self, menu_state):
         _, _, new_state = process_message("BOOK", menu_state, [])
@@ -470,6 +470,189 @@ class TestStateMachineReview:
 
         saved = json.loads(reviews_path.read_text())
         assert saved[0]["text"] == long_text
+
+
+# ---------------------------------------------------------------------------
+# Helpers shared by cancel tests
+# ---------------------------------------------------------------------------
+
+def _future_appt(customer_id=6945, tech_id=4697, svc="plumbing",
+                 start="2030-06-15T14:00:00", end="2030-06-15T16:00:00"):
+    return {"customer_id": customer_id, "tech_id": tech_id,
+            "appointment_type": svc, "addr": "95281 Joshua Courts, San Francisco, CA, 94111",
+            "start_time": start, "end_time": end}
+
+def _past_appt(**kwargs):
+    return _future_appt(start="2020-01-01T10:00:00", end="2020-01-01T12:00:00", **kwargs)
+
+
+class TestStateMachineCancelFromMenu:
+    """Tests for 'cancel' entered at MAIN_MENU."""
+
+    @pytest.fixture
+    def menu_state(self):
+        s = initial_state()
+        s["stage"] = "MAIN_MENU"
+        s["customer"] = {"id": 6945, "name": "Heather Russell", "contact": "x"}
+        return s
+
+    def test_cancel_with_future_appts_moves_to_cancel_select(self, tmp_path, monkeypatch, menu_state):
+        import storage as st
+        appt_path = tmp_path / "appointments.json"
+        import json
+        appt_path.write_text(json.dumps([_future_appt()]))
+        monkeypatch.setattr(st, "APPOINTMENTS_PATH", appt_path)
+
+        _, _, new_state = process_message("cancel", menu_state, [])
+        assert new_state["stage"] == "CANCEL_SELECT"
+
+    def test_cancel_populates_cancel_options(self, tmp_path, monkeypatch, menu_state):
+        import storage as st, json
+        appt_path = tmp_path / "appointments.json"
+        appt = _future_appt()
+        appt_path.write_text(json.dumps([appt]))
+        monkeypatch.setattr(st, "APPOINTMENTS_PATH", appt_path)
+
+        _, _, new_state = process_message("cancel", menu_state, [])
+        assert new_state["cancel_options"] == [appt]
+
+    def test_cancel_with_no_future_appts_stays_in_menu(self, tmp_path, monkeypatch, menu_state):
+        import storage as st, json
+        appt_path = tmp_path / "appointments.json"
+        appt_path.write_text(json.dumps([_past_appt()]))
+        monkeypatch.setattr(st, "APPOINTMENTS_PATH", appt_path)
+
+        _, history, new_state = process_message("cancel", menu_state, [])
+        assert new_state["stage"] == "MAIN_MENU"
+        assert "no upcoming" in history[-1]["content"].lower()
+
+    def test_cancel_with_empty_file_stays_in_menu(self, tmp_path, monkeypatch, menu_state):
+        import storage as st, json
+        appt_path = tmp_path / "appointments.json"
+        appt_path.write_text("[]")
+        monkeypatch.setattr(st, "APPOINTMENTS_PATH", appt_path)
+
+        _, _, new_state = process_message("cancel", menu_state, [])
+        assert new_state["stage"] == "MAIN_MENU"
+
+    def test_past_appts_excluded_from_options(self, tmp_path, monkeypatch, menu_state):
+        import storage as st, json
+        appt_path = tmp_path / "appointments.json"
+        future = _future_appt()
+        past = _past_appt()
+        appt_path.write_text(json.dumps([past, future]))
+        monkeypatch.setattr(st, "APPOINTMENTS_PATH", appt_path)
+
+        _, _, new_state = process_message("cancel", menu_state, [])
+        assert new_state["cancel_options"] == [future]
+
+    def test_other_customer_appts_excluded(self, tmp_path, monkeypatch, menu_state):
+        import storage as st, json
+        appt_path = tmp_path / "appointments.json"
+        own = _future_appt(customer_id=6945)
+        other = _future_appt(customer_id=9999)
+        appt_path.write_text(json.dumps([own, other]))
+        monkeypatch.setattr(st, "APPOINTMENTS_PATH", appt_path)
+
+        _, _, new_state = process_message("cancel", menu_state, [])
+        assert new_state["cancel_options"] == [own]
+
+    def test_reply_lists_appointments(self, tmp_path, monkeypatch, menu_state):
+        import storage as st, json
+        appt_path = tmp_path / "appointments.json"
+        appt_path.write_text(json.dumps([_future_appt()]))
+        monkeypatch.setattr(st, "APPOINTMENTS_PATH", appt_path)
+
+        _, history, _ = process_message("cancel", menu_state, [])
+        content = history[-1]["content"]
+        assert "1." in content
+        assert "plumbing" in content.lower()
+
+    def test_case_insensitive_cancel(self, tmp_path, monkeypatch, menu_state):
+        import storage as st, json
+        appt_path = tmp_path / "appointments.json"
+        appt_path.write_text(json.dumps([_future_appt()]))
+        monkeypatch.setattr(st, "APPOINTMENTS_PATH", appt_path)
+
+        _, _, new_state = process_message("CANCEL", menu_state, [])
+        assert new_state["stage"] == "CANCEL_SELECT"
+
+
+class TestStateMachineCancelSelect:
+    """Tests for the CANCEL_SELECT stage."""
+
+    @pytest.fixture
+    def cancel_state(self, tmp_path, monkeypatch):
+        import storage as st, json
+        appt_path = tmp_path / "appointments.json"
+        self.appt1 = _future_appt(svc="plumbing", start="2030-06-15T14:00:00", end="2030-06-15T16:00:00")
+        self.appt2 = _future_appt(svc="electrical", start="2030-06-20T10:00:00", end="2030-06-20T12:00:00")
+        appt_path.write_text(json.dumps([self.appt1, self.appt2]))
+        monkeypatch.setattr(st, "APPOINTMENTS_PATH", appt_path)
+        self.appt_path = appt_path
+
+        s = initial_state()
+        s["stage"] = "CANCEL_SELECT"
+        s["customer"] = {"id": 6945, "name": "Heather Russell", "contact": "x"}
+        s["cancel_options"] = [self.appt1, self.appt2]
+        return s
+
+    def test_valid_number_removes_appointment(self, cancel_state):
+        import json
+        process_message("1", cancel_state, [])
+        saved = json.loads(self.appt_path.read_text())
+        assert self.appt1 not in saved
+        assert self.appt2 in saved
+
+    def test_valid_number_returns_to_menu(self, cancel_state):
+        _, _, new_state = process_message("1", cancel_state, [])
+        assert new_state["stage"] == "MAIN_MENU"
+
+    def test_valid_number_clears_cancel_options(self, cancel_state):
+        _, _, new_state = process_message("2", cancel_state, [])
+        assert new_state["cancel_options"] == []
+
+    def test_confirmation_reply_mentions_service(self, cancel_state):
+        _, history, _ = process_message("1", cancel_state, [])
+        assert "plumbing" in history[-1]["content"].lower()
+
+    def test_back_returns_to_menu(self, cancel_state):
+        _, _, new_state = process_message("back", cancel_state, [])
+        assert new_state["stage"] == "MAIN_MENU"
+
+    def test_back_clears_cancel_options(self, cancel_state):
+        _, _, new_state = process_message("back", cancel_state, [])
+        assert new_state["cancel_options"] == []
+
+    def test_back_does_not_cancel_anything(self, cancel_state):
+        import json
+        process_message("back", cancel_state, [])
+        saved = json.loads(self.appt_path.read_text())
+        assert len(saved) == 2
+
+    def test_non_numeric_input_stays_in_stage(self, cancel_state):
+        _, _, new_state = process_message("one", cancel_state, [])
+        assert new_state["stage"] == "CANCEL_SELECT"
+
+    def test_zero_is_invalid(self, cancel_state):
+        _, _, new_state = process_message("0", cancel_state, [])
+        assert new_state["stage"] == "CANCEL_SELECT"
+
+    def test_out_of_range_high_stays_in_stage(self, cancel_state):
+        _, history, new_state = process_message("99", cancel_state, [])
+        assert new_state["stage"] == "CANCEL_SELECT"
+        assert "2" in history[-1]["content"]   # tells them max is 2
+
+    def test_negative_number_stays_in_stage(self, cancel_state):
+        _, _, new_state = process_message("-1", cancel_state, [])
+        assert new_state["stage"] == "CANCEL_SELECT"
+
+    def test_second_appointment_cancellable(self, cancel_state):
+        import json
+        process_message("2", cancel_state, [])
+        saved = json.loads(self.appt_path.read_text())
+        assert self.appt2 not in saved
+        assert self.appt1 in saved
 
 
 class TestStateMachineBookingService:
