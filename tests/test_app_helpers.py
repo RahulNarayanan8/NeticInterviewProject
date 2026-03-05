@@ -319,13 +319,22 @@ class TestStateMachineMainMenu:
         _, _, new_state = process_message("faq", menu_state, [])
         assert new_state["stage"] == "FAQ"
 
+    def test_review_moves_to_review(self, menu_state):
+        _, _, new_state = process_message("review", menu_state, [])
+        assert new_state["stage"] == "REVIEW"
+
     def test_invalid_stays_in_menu(self, menu_state):
-        _, _, new_state = process_message("help", menu_state, [])
+        _, history, new_state = process_message("help", menu_state, [])
         assert new_state["stage"] == "MAIN_MENU"
+        assert "review" in history[-1]["content"].lower()
 
     def test_case_insensitive_book(self, menu_state):
         _, _, new_state = process_message("BOOK", menu_state, [])
         assert new_state["stage"] == "BOOKING_SERVICE"
+
+    def test_case_insensitive_review(self, menu_state):
+        _, _, new_state = process_message("REVIEW", menu_state, [])
+        assert new_state["stage"] == "REVIEW"
 
 
 class TestStateMachineFAQ:
@@ -340,7 +349,8 @@ class TestStateMachineFAQ:
         assert new_state["stage"] == "MAIN_MENU"
 
     def test_question_calls_faq_and_stays(self, faq_state):
-        with patch("app.faq_module.answer_faq", return_value="It takes 1-2 hours.") as mock_faq:
+        with patch("app.storage.load_appointments", return_value=[]) as _mock_load, \
+             patch("app.faq_module.answer_faq", return_value="It takes 1-2 hours.") as mock_faq:
             _, history, new_state = process_message("How long does plumbing take?", faq_state, [])
         assert new_state["stage"] == "FAQ"
         assert history[-1]["content"] == "It takes 1-2 hours."
@@ -349,7 +359,117 @@ class TestStateMachineFAQ:
             customer=faq_state["customer"],
             location=faq_state["location"],
             data=FAKE_DATA,
+            appointments=[],
         )
+
+    def test_only_customer_appointments_passed(self):
+        """Appointments for other customers must be filtered out."""
+        s = initial_state()
+        s["stage"] = "FAQ"
+        s["customer"] = {"id": 6945, "name": "Heather Russell", "contact": "x"}
+        s["location"] = None
+
+        own_appt   = {"customer_id": 6945, "tech_id": 4697, "appointment_type": "plumbing",
+                      "addr": "x", "start_time": "2030-06-15T14:00:00", "end_time": "2030-06-15T16:00:00"}
+        other_appt = {"customer_id": 9999, "tech_id": 8886, "appointment_type": "hvac",
+                      "addr": "y", "start_time": "2030-06-15T10:00:00", "end_time": "2030-06-15T11:00:00"}
+
+        with patch("app.storage.load_appointments", return_value=[own_appt, other_appt]), \
+             patch("app.faq_module.answer_faq", return_value="ok") as mock_faq:
+            process_message("Any appointments?", s, [])
+
+        _args, kwargs = mock_faq.call_args
+        assert kwargs["appointments"] == [own_appt]
+
+
+class TestStateMachineReview:
+    @pytest.fixture
+    def review_state(self):
+        s = initial_state()
+        s["stage"] = "REVIEW"
+        s["customer"] = {"id": 6945, "name": "Heather Russell", "contact": "x"}
+        return s
+
+    def test_review_saved_and_returns_to_menu(self, tmp_path, monkeypatch, review_state):
+        import storage as st
+        reviews_path = tmp_path / "reviews.json"
+        reviews_path.write_text("[]")
+        monkeypatch.setattr(st, "REVIEWS_PATH", reviews_path)
+
+        _, _, new_state = process_message("Great service!", review_state, [])
+        assert new_state["stage"] == "MAIN_MENU"
+
+    def test_review_text_persisted(self, tmp_path, monkeypatch, review_state):
+        import json, storage as st
+        reviews_path = tmp_path / "reviews.json"
+        reviews_path.write_text("[]")
+        monkeypatch.setattr(st, "REVIEWS_PATH", reviews_path)
+
+        process_message("Technician was on time and professional.", review_state, [])
+
+        saved = json.loads(reviews_path.read_text())
+        assert len(saved) == 1
+        assert saved[0]["text"] == "Technician was on time and professional."
+
+    def test_review_stores_customer_info(self, tmp_path, monkeypatch, review_state):
+        import json, storage as st
+        reviews_path = tmp_path / "reviews.json"
+        reviews_path.write_text("[]")
+        monkeypatch.setattr(st, "REVIEWS_PATH", reviews_path)
+
+        process_message("Very happy with the work.", review_state, [])
+
+        saved = json.loads(reviews_path.read_text())
+        assert saved[0]["customer_id"] == 6945
+        assert saved[0]["customer_name"] == "Heather Russell"
+
+    def test_review_stores_timestamp(self, tmp_path, monkeypatch, review_state):
+        import json, storage as st
+        reviews_path = tmp_path / "reviews.json"
+        reviews_path.write_text("[]")
+        monkeypatch.setattr(st, "REVIEWS_PATH", reviews_path)
+
+        process_message("Good job.", review_state, [])
+
+        saved = json.loads(reviews_path.read_text())
+        assert "submitted_at" in saved[0]
+        # Verify it parses as a valid ISO datetime
+        datetime.fromisoformat(saved[0]["submitted_at"])
+
+    def test_multiple_reviews_accumulate(self, tmp_path, monkeypatch, review_state):
+        import json, storage as st
+        reviews_path = tmp_path / "reviews.json"
+        reviews_path.write_text("[]")
+        monkeypatch.setattr(st, "REVIEWS_PATH", reviews_path)
+
+        for text in ["First review.", "Second review.", "Third review."]:
+            s = {**review_state, "stage": "REVIEW"}
+            process_message(text, s, [])
+
+        saved = json.loads(reviews_path.read_text())
+        assert len(saved) == 3
+        assert [r["text"] for r in saved] == ["First review.", "Second review.", "Third review."]
+
+    def test_reply_confirms_submission(self, tmp_path, monkeypatch, review_state):
+        import storage as st
+        reviews_path = tmp_path / "reviews.json"
+        reviews_path.write_text("[]")
+        monkeypatch.setattr(st, "REVIEWS_PATH", reviews_path)
+
+        _, history, _ = process_message("Loved it!", review_state, [])
+        assert "thank you" in history[-1]["content"].lower()
+
+    def test_review_accepts_any_text(self, tmp_path, monkeypatch, review_state):
+        import json, storage as st
+        reviews_path = tmp_path / "reviews.json"
+        reviews_path.write_text("[]")
+        monkeypatch.setattr(st, "REVIEWS_PATH", reviews_path)
+
+        long_text = ("This is a very long review. " * 50).strip()
+        process_message(long_text, review_state, [])
+
+        saved = json.loads(reviews_path.read_text())
+        assert saved[0]["text"] == long_text
 
 
 class TestStateMachineBookingService:

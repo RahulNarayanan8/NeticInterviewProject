@@ -200,7 +200,7 @@ def process_message(user_input: str, state: dict, history: list):
             name = state["customer"]["name"]
             reply = (
                 f"Welcome, {name}! What can I help you with?\n"
-                "Type **book** to schedule a service or **faq** to ask a question."
+                "Type **book** to schedule a service, **faq** to ask a question, or **review** to leave a review."
             )
         elif user_input.lower() in ("no", "n"):
             state["stage"] = "IDENTIFY"
@@ -219,25 +219,44 @@ def process_message(user_input: str, state: dict, history: list):
         elif cmd == "faq":
             state["stage"] = "FAQ"
             reply = "Ask your question (or type **done** to go back to the menu)."
+        elif cmd == "review":
+            state["stage"] = "REVIEW"
+            reply = "Please type your review and press Send."
         else:
-            reply = "Please type **book** or **faq**."
+            reply = "Please type **book**, **faq**, or **review**."
 
     # -----------------------------------------------------------------------
     elif stage == "FAQ":
         if user_input.lower() == "done":
             state["stage"] = "MAIN_MENU"
-            reply = (
-                "Back to the main menu. Type **book** or **faq**."
-            )
+            reply = "Back to the main menu. Type **book**, **faq**, or **review**."
         else:
+            all_appts = storage.load_appointments()
+            customer_appts = [
+                a for a in all_appts
+                if a["customer_id"] == state["customer"]["id"]
+            ]
             answer = faq_module.answer_faq(
                 user_input,
                 customer=state["customer"],
                 location=state["location"],
                 data=get_data(),
+                appointments=customer_appts,
             )
             reply = answer
             # Stay in FAQ stage
+
+    # -----------------------------------------------------------------------
+    elif stage == "REVIEW":
+        customer = state["customer"]
+        storage.save_review({
+            "customer_id": customer["id"],
+            "customer_name": customer["name"],
+            "text": user_input,
+            "submitted_at": datetime.now().isoformat(),
+        })
+        state["stage"] = "MAIN_MENU"
+        reply = "Thank you for your review! Type **book**, **faq**, or **review**."
 
     # -----------------------------------------------------------------------
     elif stage == "BOOKING_SERVICE":
@@ -355,7 +374,7 @@ def process_message(user_input: str, state: dict, history: list):
                 "start_time": None, "end_time": None,
             }
             state["stage"] = "MAIN_MENU"
-            reply += "\n\nType **book** to make another booking or **faq** for questions."
+            reply += "\n\nType **book**, **faq**, or **review**."
 
         elif user_input.lower() in ("no", "n"):
             state["stage"] = "MAIN_MENU"
