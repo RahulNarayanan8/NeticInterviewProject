@@ -92,6 +92,121 @@ After identifying yourself, you'll land at the main menu. All four options are a
 
 ---
 
+## Example Usage
+
+Each example shows the full conversation for one flow. `🤖` is the bot, `👤` is the customer.
+
+### Booking a plumbing appointment
+
+```
+🤖  Welcome! Please enter your customer ID or full name.
+👤  6945
+🤖  Found: Heather Russell. Is this you? (yes / no)
+👤  yes
+🤖  Welcome, Heather Russell! Type book, faq, review, or cancel.
+👤  book
+🤖  What service do you need? (plumbing / electrical / hvac)
+👤  plumbing
+🤖  Your address on file: 95281 Joshua Courts, San Francisco, CA, 94111.
+    Use this address? Type yes or enter a new address.
+👤  yes
+🤖  When would you like the appointment, and how long should it be?
+    You can say things like: 'March 10 at 2pm for 2 hours' or '2030-03-10 14:00 2'
+👤  March 10th at 2pm for 2 hours
+🤖  Summary:
+    - Service: plumbing
+    - Address: 95281 Joshua Courts, San Francisco, CA, 94111
+    - From: 2030-03-10 14:00 to 2030-03-10 16:00
+    Confirm? (yes / no)
+👤  yes
+🤖  Booked! Your technician is Michael Page.
+    Appointment: plumbing on 2030-03-10 from 14:00 to 16:00.
+    Type book, faq, review, or cancel.
+```
+
+### Attempting to book an unavailable service
+
+```
+👤  book
+🤖  What service do you need? (plumbing / electrical / hvac)
+👤  hvac
+🤖  Sorry, we don't currently have any hvac technicians serving zip code 94111.
+    Type book to choose a different service or faq for questions.
+```
+
+### Cancelling an appointment
+
+```
+👤  cancel
+🤖  Your upcoming appointments:
+      1. Plumbing — 2030-03-10 14:00 — 95281 Joshua Courts, San Francisco, CA, 94111 — Michael Page
+      2. Electrical — 2030-04-02 09:00 — 95281 Joshua Courts, San Francisco, CA, 94111 — Michael Page
+
+    Enter the number to cancel, or back to return to the menu.
+👤  1
+🤖  Your plumbing appointment on 2030-03-10 at 14:00 has been cancelled.
+    Type book, faq, review, or cancel.
+```
+
+### Entering an invalid cancellation number
+
+```
+🤖  Enter the number to cancel, or back to return to the menu.
+👤  5
+🤖  Please enter a number between 1 and 2, or back to return.
+👤  back
+🤖  Type book, faq, review, or cancel.
+```
+
+### Asking a question
+
+```
+👤  faq
+🤖  Ask your question (or type done to go back to the menu).
+👤  Do you offer plumbing at my address?
+🤖  Yes! We have Michael Page who covers your zip code (94111) and offers
+    plumbing services. You can book an appointment by typing 'book' from
+    the main menu.
+👤  When is my next appointment?
+🤖  Your next appointment is a plumbing visit on March 10, 2030 at 2:00 PM
+    at 95281 Joshua Courts. Your technician will be Michael Page.
+👤  done
+🤖  Type book, faq, review, or cancel.
+```
+
+### Leaving a review
+
+```
+👤  review
+🤖  Please type your review and press Send.
+👤  Michael was punctual and fixed the leak quickly. Very happy with the service.
+🤖  Thank you for your review! Type book, faq, review, or cancel.
+```
+
+### Validation errors during booking
+
+```
+🤖  When would you like the appointment, and how long should it be?
+👤  yesterday at 3pm for 1 hour
+🤖  Invalid input: Appointment date/time is in the past. Please choose a future time.
+    Please try again (e.g. 'March 10 at 2pm for 2 hours').
+👤  tomorrow at 4am for 1 hour
+🤖  Invalid input: Start time must be at or after 06:00.
+    Please try again.
+👤  tomorrow at 11pm for 3 hours
+🤖  Invalid input: Appointment must not cross midnight.
+    Please try again.
+👤  tomorrow at 2pm for 10 hours
+🤖  Invalid input: Duration cannot exceed 8 hours.
+    Please try again.
+👤  tomorrow at 2pm for 2 hours
+🤖  Summary:
+    - Service: plumbing
+    ...
+```
+
+---
+
 ## Core Logic
 
 ### State machine (`app.py`)
